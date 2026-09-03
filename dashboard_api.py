@@ -2133,7 +2133,12 @@ def settings_payload(unibase_path: Path) -> dict:
             "kind": row["kind"],
             "original": row["kind"] == "live",
             "enabled": bool(row["enabled"]),
-            "layout": "Original source" if row["kind"] == "live" else "Snapshot" if row["kind"] == "normalized_backup" else "Imported source",
+            "layout": (
+                "Original source" if row["kind"] == "live"
+                else "Mirror" if row["continuous"]
+                else "Snapshot" if row["kind"] == "normalized_backup"
+                else "Imported source"
+            ),
             "snapshot_date": row["snapshot_date"],
             "status": row["discovery_status"],
             "stale": bool(row["stale"]),
@@ -2253,6 +2258,7 @@ def refresh_enabled_sources(
                 not force_full_scan
                 and not source["stale"]
                 and source["kind"] != "live"
+                and not source["continuous"]
                 and source["discovery_status"] == "ready"
                 and source["last_successful_scan"]
                 and not source_parser_outdated(database, source)

@@ -16,7 +16,7 @@ from pathlib import Path, PurePosixPath
 from typing import Iterable, Iterator
 
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 DEFAULT_UNIBASE_DB = Path.home() / ".metermesh" / "unibase.sqlite3"
 PROVIDERS = ("codex", "claude", "opencode")
 SOURCE_PRIORITIES = {"live": 1000, "normalized_backup": 500, "legacy_backup": 400}
@@ -218,6 +218,7 @@ create table sources (
     error text,
     inventory_signature text,
     stable_inventory_count integer not null default 0,
+    continuous integer not null default 0,
     created_at text not null,
     updated_at text not null,
     unique(provider, kind, relative_name)
@@ -410,6 +411,7 @@ class DiscoveredSource:
     snapshot_date: str | None
     status: str
     inventory_signature: str | None = None
+    continuous: bool = False
 
 
 class Unibase:
@@ -638,6 +640,14 @@ class Unibase:
                     conn.execute("update known_models set color_slot = null")
                     conn.execute("pragma user_version = 11")
                     conn.commit()
+                    version = 11
+                if version == 11:
+                    conn.execute("begin immediate")
+                    source_columns = {row[1] for row in conn.execute("pragma table_info(sources)")}
+                    if "continuous" not in source_columns:
+                        conn.execute("alter table sources add column continuous integer not null default 0")
+                    conn.execute("pragma user_version = 12")
+                    conn.commit()
 
     def settings(self) -> dict:
         with self.connect(readonly=True) as conn:
@@ -792,8 +802,8 @@ class Unibase:
                 insert into sources(
                     source_id, provider, kind, root_path, relative_name, label, enabled, priority,
                     snapshot_id, snapshot_date, discovery_status, inventory_signature,
-                    stable_inventory_count, created_at, updated_at
-                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    stable_inventory_count, continuous, created_at, updated_at
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 on conflict(source_id) do update set
                     root_path = excluded.root_path,
                     relative_name = excluded.relative_name,
@@ -804,6 +814,7 @@ class Unibase:
                     discovery_status = excluded.discovery_status,
                     inventory_signature = excluded.inventory_signature,
                     stable_inventory_count = excluded.stable_inventory_count,
+                    continuous = excluded.continuous,
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -820,6 +831,7 @@ class Unibase:
                     status,
                     source.inventory_signature,
                     stable_count,
+                    int(source.continuous),
                     now,
                     now,
                 ),
@@ -1516,11 +1528,13 @@ def discover_backup_sources(provider: str, add_stat_dir: Path) -> list[Discovere
                     raise ValueError("invalid snapshot manifest")
                 snapshot_id = manifest["id"]
                 label = safe_display_label(manifest.get("label"), child.name)
+                continuous = manifest.get("refresh") == "continuous"
                 discovered.append(
                     DiscoveredSource(
                         stable_id(provider, "snapshot", snapshot_id), provider, "normalized_backup", root,
                         child.name, label, False, SOURCE_PRIORITIES["normalized_backup"], snapshot_id,
                         str(manifest.get("created_at") or "") or None, "ready",
+                        continuous=continuous,
                     )
                 )
             except (OSError, ValueError, json.JSONDecodeError):

@@ -86,6 +86,55 @@ Example manifest:
 
 Legacy full copies placed directly under `add_stat` are detected only at fixed safe roots. New backups are registered unchecked. Legacy copies require two stable inventory observations before import.
 
+## Combining usage from a second machine
+
+A backup snapshot manifest can also describe a folder that keeps changing instead of a frozen point-in-time copy. Add `"refresh": "continuous"` to the manifest and MeterMesh rescans that source on every refresh — incrementally, the same way it rescans your live source — instead of scanning it once and leaving it alone. That turns the ordinary backup mechanism into a way to fold a second machine's usage into this one's dashboard: mirror the other machine's Codex/Claude/OpenCode data into a `root/` folder under `add_stat` with a Syncthing send-only share, and its sessions merge in automatically, deduplicated by the same content hash used for everything else — a session synced from both machines collapses into one event; sessions that only exist on one machine simply add to the total.
+
+1. Install [Syncthing](https://syncthing.net) on both machines.
+2. On this machine, create one manifest + `root/` folder per provider you want to combine, for example under `~/.codex/add_stat/mac-mirror/`:
+
+   ```text
+   ~/.codex/add_stat/mac-mirror/snapshot.json
+   ~/.codex/add_stat/mac-mirror/root/sessions/...
+   ~/.claude/add_stat/mac-mirror/snapshot.json
+   ~/.claude/add_stat/mac-mirror/root/projects/...
+   <opencode-data-dir>/add_stat/mac-mirror/snapshot.json
+   <opencode-data-dir>/add_stat/mac-mirror/root/opencode.db
+   ```
+
+   `scripts/setup-mac-mirror.ps1` creates all three (manifests included) in one step:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\scripts\setup-mac-mirror.ps1
+   ```
+
+3. Each manifest needs `"refresh": "continuous"` in addition to the usual fields:
+
+   ```json
+   {
+     "format": "metermesh-provider-snapshot",
+     "version": 1,
+     "id": "mac-mirror-codex",
+     "provider": "codex",
+     "created_at": "2026-07-01T12:00:00Z",
+     "label": "Mac (Syncthing mirror)",
+     "root": "root",
+     "refresh": "continuous"
+   }
+   ```
+
+4. In Syncthing, share the other machine's live folders **send-only** into these `root/` folders — never the other way, and never into this machine's own live `~/.codex`, `~/.claude`, or OpenCode data directory:
+
+   | From (other machine, send-only) | To (this machine) |
+   |---|---|
+   | `~/.codex/sessions` | `~/.codex/add_stat/mac-mirror/root/sessions` |
+   | `~/.claude/projects` | `~/.claude/add_stat/mac-mirror/root/projects` |
+   | `~/.local/share/opencode/opencode.db` | `<opencode-data-dir>/add_stat/mac-mirror/root/opencode.db` |
+
+5. Open Settings → Data Health here. Each provider gets a new source labeled **Mirror**; enable it like any other backup source. Its file and event counts grow as Syncthing delivers new sessions — no manual reindex needed.
+
+These mirrored folders are full copies of the other machine's raw session files, the same as any other backup snapshot — Unibase itself still only stores usage metadata, never prompts or content, but the raw mirror sits on disk next to it.
+
 ## Privacy
 
 Unibase stores usage metadata, hashed stream/event identities, token components, model/provider identifiers, cost semantics, and source provenance. It does not store prompts, responses, tool output, cwd, attachments, project paths, session titles, credentials, auth tokens, or account identity.

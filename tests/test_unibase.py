@@ -28,7 +28,7 @@ class UnibaseFoundationTests(unittest.TestCase):
             self.assertEqual(conn.execute("pragma busy_timeout").fetchone()[0], 30000)
 
     def test_schema_eleven_defaults_to_merged_models(self):
-        self.assertEqual(unibase.SCHEMA_VERSION, 11)
+        self.assertEqual(unibase.SCHEMA_VERSION, 12)
         self.assertEqual(json.loads(self.db.settings()["non_working_weekdays"]), [5, 6])
         self.assertEqual(self.db.settings()["merge_models_across_providers"], 1)
         with self.db.connect(readonly=True) as conn:
@@ -111,6 +111,19 @@ class UnibaseFoundationTests(unittest.TestCase):
         self.assertEqual(settings["revision"], before_revision + 1)
         with reopened.connect(readonly=True) as conn:
             self.assertIsNone(conn.execute("select color_slot from known_models where model = 'model-a'").fetchone()[0])
+
+    def test_version_eleven_adds_continuous_column(self):
+        with self.db.connect() as conn:
+            conn.execute("alter table sources drop column continuous")
+            conn.execute("pragma user_version = 11")
+
+        reopened = unibase.Unibase(self.db_path)
+
+        with reopened.connect(readonly=True) as conn:
+            self.assertEqual(conn.execute("pragma user_version").fetchone()[0], unibase.SCHEMA_VERSION)
+            columns = {row[1]: row for row in conn.execute("pragma table_info(sources)")}
+        self.assertIn("continuous", columns)
+        self.assertEqual(columns["continuous"]["dflt_value"], "0")
 
     def test_existing_database_can_skip_migration_for_read_paths(self):
         with patch.object(unibase.Unibase, "migrate") as migrate:
@@ -249,6 +262,33 @@ class UnibaseFoundationTests(unittest.TestCase):
         self.assertEqual(sources[0].status, "ready")
         self.assertEqual(sources[1].status, "ready")
         self.assertFalse(any(source.enabled for source in sources))
+        self.assertFalse(sources[0].continuous)
+        self.assertFalse(sources[1].continuous)
+
+    def test_manifest_refresh_continuous_flag_is_parsed(self):
+        add_stat = self.root / "add_stat"
+        mirror = add_stat / "mirror"
+        rollout = mirror / "root" / "sessions" / "2026" / "07" / "16" / "rollout-a.jsonl"
+        rollout.parent.mkdir(parents=True)
+        rollout.write_text("{}\n", encoding="utf-8")
+        (mirror / "snapshot.json").write_text(json.dumps({
+            "format": unibase.SNAPSHOT_FORMAT,
+            "version": 1,
+            "id": "mac-mirror-codex",
+            "provider": "codex",
+            "created_at": "2026-07-16T00:00:00Z",
+            "label": "Mac (Syncthing mirror)",
+            "root": "root",
+            "refresh": "continuous",
+        }), encoding="utf-8")
+
+        source = unibase.discover_backup_sources("codex", add_stat)[0]
+
+        self.assertEqual(source.kind, "normalized_backup")
+        self.assertTrue(source.continuous)
+
+        self.db.register_source(source)
+        self.assertTrue(self.db.sources("codex")[0]["continuous"])
 
     def test_rediscovery_preserves_existing_live_source_status(self):
         source = unibase.DiscoveredSource(
