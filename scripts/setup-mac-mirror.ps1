@@ -27,7 +27,10 @@ function New-MirrorManifest([string]$Provider, [string]$Root, [string]$RelativeI
     root       = "root"
     refresh    = "continuous"
   }
-  ($manifest | ConvertTo-Json) | Out-File -LiteralPath $manifestPath -Encoding utf8
+  $json = $manifest | ConvertTo-Json
+  # Out-File/Set-Content -Encoding utf8 write a BOM in Windows PowerShell 5.1,
+  # which Python's json.loads() rejects — write BOM-less UTF-8 explicitly.
+  [System.IO.File]::WriteAllText($manifestPath, $json, (New-Object System.Text.UTF8Encoding($false)))
   Write-Host "Created $manifestPath"
   Write-Host "  Point Syncthing (send-only on the Mac) at: $dataDir"
 }
