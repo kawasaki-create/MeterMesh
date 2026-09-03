@@ -1142,6 +1142,7 @@ def _usage_where(
     start_ts: int | None,
     end_ts: int | None,
     ignore_auto_review: bool,
+    origin: str = "all",
 ) -> tuple[str, list[object]]:
     clauses = ["model not in (select model from disabled_models)"]
     params: list[object] = []
@@ -1157,6 +1158,14 @@ def _usage_where(
     if ignore_auto_review:
         clauses.append("not (provider = 'codex' and model = ?)")
         params.append(AUTO_REVIEW_MODEL)
+    if origin != "all":
+        clauses.append(
+            "exists ("
+            "select 1 from event_occurrences eo join sources s on s.source_id = eo.source_id "
+            "where eo.event_variant_id = active_events.event_variant_id and s.relative_name = ?"
+            ")"
+        )
+        params.append(origin)
     return (" where " + " and ".join(clauses) if clauses else ""), params
 
 
@@ -1194,8 +1203,9 @@ def _usage_time_bounds(
     start_ts: int | None,
     end_ts: int | None,
     ignore_auto_review: bool,
+    origin: str = "all",
 ) -> tuple[int | None, int | None]:
-    where, params = _usage_where(provider, start_ts, end_ts, ignore_auto_review)
+    where, params = _usage_where(provider, start_ts, end_ts, ignore_auto_review, origin)
     row = conn.execute(
         "select min(occurred_at) first_event, max(occurred_at) last_event from active_events" + where,
         params,
@@ -1212,8 +1222,9 @@ def _usage_group_rows(
     end_ts: int | None,
     ignore_auto_review: bool,
     local_day_sql: str,
+    origin: str = "all",
 ) -> list[dict]:
-    where, params = _usage_where(provider, start_ts, end_ts, ignore_auto_review)
+    where, params = _usage_where(provider, start_ts, end_ts, ignore_auto_review, origin)
     rows = conn.execute(
         """
         select """ + local_day_sql + """ day,
@@ -1255,8 +1266,9 @@ def _usage_session_rows(
     end_ts: int | None,
     ignore_auto_review: bool,
     local_day_sql: str,
+    origin: str = "all",
 ) -> list[dict]:
-    where, params = _usage_where(provider, start_ts, end_ts, ignore_auto_review)
+    where, params = _usage_where(provider, start_ts, end_ts, ignore_auto_review, origin)
     rows = conn.execute(
         """
         select distinct """ + local_day_sql + """ day,
@@ -1278,8 +1290,9 @@ def _chart_group_rows(
     end_ts: int | None,
     ignore_auto_review: bool,
     local_day_sql: str,
+    origin: str = "all",
 ) -> list[dict]:
-    where, params = _usage_where(provider, start_ts, end_ts, ignore_auto_review)
+    where, params = _usage_where(provider, start_ts, end_ts, ignore_auto_review, origin)
     rows = conn.execute(
         """
         select """ + local_day_sql + """ day,
@@ -1305,9 +1318,10 @@ def _activity_timestamps(
     start_ts: int | None,
     end_ts: int | None,
     ignore_auto_review: bool,
+    origin: str = "all",
 ) -> list[int]:
     query_start = start_ts - ACTIVITY_IDLE_TIMEOUT_SECONDS if start_ts is not None else None
-    where, params = _usage_where(provider, query_start, end_ts, ignore_auto_review)
+    where, params = _usage_where(provider, query_start, end_ts, ignore_auto_review, origin)
     return [
         int(row["occurred_at"])
         for row in conn.execute(
@@ -1324,8 +1338,9 @@ def _repriced_models(
     start_ts: int | None,
     end_ts: int | None,
     ignore_auto_review: bool,
+    origin: str = "all",
 ) -> list[str]:
-    where, params = _usage_where(provider, start_ts, end_ts, ignore_auto_review)
+    where, params = _usage_where(provider, start_ts, end_ts, ignore_auto_review, origin)
     cost_clause = "(cost_kind != 'recorded' or cost_usd is null)"
     where += (" and " if where else " where ") + cost_clause
     return [
@@ -1536,12 +1551,26 @@ def load_unibase_usage(
     provider: str = "all",
     timezone_name: str = "UTC",
     workdays_only: bool = False,
+    origin: str = "all",
 ) -> dict:
     started_at = time.perf_counter()
     provider = normalize_provider(provider)
     unibase = Unibase(unibase_path, migrate=False)
     settings = unibase.settings()
     merge_models = provider == "all" and bool(settings["merge_models_across_providers"])
+    origin_labels: dict[str, str] = {}
+    for row in unibase.sources():
+        if not row["enabled"]:
+            continue
+        relative_name = str(row["relative_name"])
+        if relative_name not in origin_labels:
+            origin_labels[relative_name] = "This device" if relative_name == "live" else str(row["label"])
+    origins = [{"value": "all", "label": "All"}] + [
+        {"value": name, "label": label}
+        for name, label in sorted(origin_labels.items(), key=lambda item: (item[0] != "live", item[1]))
+    ]
+    if origin != "all" and origin not in origin_labels:
+        origin = "all"
     timezone = resolve_timezone(timezone_name)
     today = dt.datetime.now(timezone).date()
     filters = resolve_range(range_name, start_day, end_day, bool(ignore_auto_review), today=today)
@@ -1560,24 +1589,24 @@ def load_unibase_usage(
         conn.execute("begin")
         _register_local_day(conn, timezone)
         actual_start_ts, actual_end_ts = _usage_time_bounds(
-            conn, provider, envelope_start_ts, envelope_end_ts, bool(ignore_auto_review)
+            conn, provider, envelope_start_ts, envelope_end_ts, bool(ignore_auto_review), origin
         )
         local_day_sql = _local_day_sql(timezone, actual_start_ts, actual_end_ts)
         raw_groups = _usage_group_rows(
-            conn, provider, usage_start_ts, usage_end_ts, bool(ignore_auto_review), local_day_sql
+            conn, provider, usage_start_ts, usage_end_ts, bool(ignore_auto_review), local_day_sql, origin
         )
         session_rows = _usage_session_rows(
-            conn, provider, usage_start_ts, usage_end_ts, bool(ignore_auto_review), local_day_sql
+            conn, provider, usage_start_ts, usage_end_ts, bool(ignore_auto_review), local_day_sql, origin
         )
         same_chart_range = (usage_start_ts, usage_end_ts) == (chart_start_ts, chart_end_ts)
         raw_chart_rows = raw_groups if same_chart_range else _chart_group_rows(
-            conn, provider, chart_start_ts, chart_end_ts, bool(ignore_auto_review), local_day_sql
+            conn, provider, chart_start_ts, chart_end_ts, bool(ignore_auto_review), local_day_sql, origin
         )
         activity_timestamps = _activity_timestamps(
-            conn, provider, chart_start_ts, chart_end_ts, bool(ignore_auto_review)
+            conn, provider, chart_start_ts, chart_end_ts, bool(ignore_auto_review), origin
         )
         repriced_models = _repriced_models(
-            conn, provider, envelope_start_ts, envelope_end_ts, bool(ignore_auto_review)
+            conn, provider, envelope_start_ts, envelope_end_ts, bool(ignore_auto_review), origin
         )
         conn.commit()
     groups = [_price_usage_group(row, pricing, provider == "all" and not merge_models) for row in raw_groups]
@@ -1714,6 +1743,8 @@ def load_unibase_usage(
     result = {
         "provider": provider,
         "provider_label": PROVIDER_LABELS[provider],
+        "origin": origin,
+        "origins": origins,
         "data_source": "Unibase",
         "supports_diagnostics": True,
         "generation": settings["generation"],
@@ -3065,6 +3096,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         requested_diagnostics = parse_bool_flag(query.get("include_diagnostics", [None])[0], default=False)
         filters["include_diagnostics"] = requested_diagnostics if self.unibase_path else provider == "codex" and requested_diagnostics
         filters["workdays_only"] = parse_bool_flag(query.get("workdays", [None])[0], default=False)
+        filters["origin"] = query.get("origin", ["all"])[0] or "all"
         return filters
 
     def usage_payload(self, filters: dict) -> dict:
@@ -3076,7 +3108,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 str(self.unibase_path), generation, settings_revision, filters["range"], filters["start_day"], filters["end_day"],
                 bool(filters["ignore_auto_review"]), filters["chart_range"], filters["chart_start_day"],
                 filters["chart_end_day"], bool(filters["include_diagnostics"]), filters["provider"], filters["timezone"],
-                bool(filters["workdays_only"]),
+                bool(filters["workdays_only"]), filters["origin"],
             )
             now = time.monotonic()
             with USAGE_RESPONSE_CACHE_LOCK:
@@ -3102,6 +3134,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     provider=str(filters["provider"]),
                     timezone_name=str(filters["timezone"]),
                     workdays_only=bool(filters["workdays_only"]),
+                    origin=str(filters["origin"]),
                 )
                 with USAGE_RESPONSE_CACHE_LOCK:
                     USAGE_RESPONSE_CACHE[cache_key] = (now, dict(payload))

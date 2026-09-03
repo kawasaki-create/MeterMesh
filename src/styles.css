@@ -3137,6 +3137,7 @@ tbody tr:hover td {
   .brand-block,
   .header-filter-row,
   .provider-switch,
+  .origin-switch,
   .range-switch {
     width: 100%;
   }

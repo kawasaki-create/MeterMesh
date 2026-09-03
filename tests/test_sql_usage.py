@@ -246,5 +246,91 @@ class SqlUsageTests(unittest.TestCase):
         self.assertIn("active_events_time", plan)
 
 
+class UsageOriginFilterTests(unittest.TestCase):
+    """A continuous mirror source (a second machine's data) must be filterable
+    separately from this machine's own live source in the Usage view."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.path = Path(self.temp_dir.name) / "unibase.sqlite3"
+        self.db = unibase.Unibase(self.path)
+        self.db.register_source(unibase.DiscoveredSource(
+            "claude-live", "claude", "live", Path("/unused"), "live", "Live Claude",
+            True, 1000, None, None, "ready",
+        ))
+        self.db.register_source(unibase.DiscoveredSource(
+            "claude-mirror", "claude", "normalized_backup", Path("/unused"), "mac-mirror",
+            "Mac (Syncthing mirror)", True, 500, "mac-mirror", None, "ready", continuous=True,
+        ))
+        self.pricing = {
+            "source": "test", "url": "", "loaded_at": "now", "models": {},
+            "fallback": dashboard_api.FALLBACK_PRICING, "error": None,
+        }
+
+    def add_event(self, source_id, event_key, stream_key, timestamp, model, *, input_tokens=0):
+        occurred_at = int(dt.datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp())
+        self.db.add_event(source_id, None, {
+            "provider": "claude",
+            "event_key": event_key,
+            "stream_key": stream_key,
+            "timestamp_utc": timestamp,
+            "occurred_at": occurred_at,
+            "model": model,
+            "native_provider_id": "anthropic",
+            "semantics": "exact",
+            "classification": "usage_update",
+            "input_tokens": input_tokens,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "output_tokens": 0,
+            "reasoning_tokens": 0,
+            "cost_usd": None,
+            "cost_kind": "unavailable",
+        }, 1)
+
+    def load(self, origin):
+        with patch.object(dashboard_api, "load_pricing", return_value=self.pricing):
+            return dashboard_api.load_unibase_usage(self.path, provider="claude", origin=origin)
+
+    def test_origin_filter_isolates_live_and_mirror_totals(self):
+        self.add_event("claude-live", "e1", "s1", "2026-07-15T00:00:00Z", "claude-sonnet-5", input_tokens=10)
+        self.add_event("claude-mirror", "e2", "s2", "2026-07-15T00:00:00Z", "claude-sonnet-5", input_tokens=7)
+        self.db.rebuild_active_events()
+
+        all_payload = self.load("all")
+        live_payload = self.load("live")
+        mirror_payload = self.load("mac-mirror")
+
+        self.assertEqual(all_payload["totals"]["input_tokens"], 17)
+        self.assertEqual(live_payload["totals"]["input_tokens"], 10)
+        self.assertEqual(mirror_payload["totals"]["input_tokens"], 7)
+        self.assertEqual(
+            {option["value"] for option in all_payload["origins"]},
+            {"all", "live", "mac-mirror"},
+        )
+
+    def test_unknown_origin_falls_back_to_all(self):
+        self.add_event("claude-live", "e1", "s1", "2026-07-15T00:00:00Z", "claude-sonnet-5", input_tokens=10)
+        self.db.rebuild_active_events()
+
+        payload = self.load("does-not-exist")
+
+        self.assertEqual(payload["origin"], "all")
+        self.assertEqual(payload["totals"]["input_tokens"], 10)
+
+    def test_disabled_source_is_not_offered_as_an_origin(self):
+        self.add_event("claude-live", "e1", "s1", "2026-07-15T00:00:00Z", "claude-sonnet-5", input_tokens=10)
+        self.db.rebuild_active_events()
+        self.db.set_source_enabled("claude-mirror", False)
+
+        payload = self.load("all")
+
+        self.assertEqual(
+            {option["value"] for option in payload["origins"]},
+            {"all", "live"},
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -94,6 +94,7 @@ const providerLogoPaths = {
 
 const initialState = readUrlState();
 let activeProvider = initialState.provider;
+let activeOrigin = initialState.origin;
 let activeRange = initialState.range;
 let customRangePending = false;
 let customRangeOpen = false;
@@ -346,6 +347,7 @@ function readUrlState() {
   const selectedPageSize = Number.parseInt(params.get("page_size") || "25", 10);
   return {
     provider: normalizeProvider(provider),
+    origin: params.get("origin") || "all",
     range: rangeOptions.some((option) => option.value === range) ? range : "all",
     start: params.get("start") || "",
     end: params.get("end") || "",
@@ -376,6 +378,7 @@ function escapeHtml(value) {
 function buildQuery(rangeName, includeDiagnostics = false) {
   const params = new URLSearchParams();
   params.set("provider", activeProvider);
+  params.set("origin", activeOrigin);
   params.set("range", rangeName);
   params.set("chart_range", activeChartRange);
   params.set("visualization", activeVisualization);
@@ -1907,6 +1910,11 @@ function render(data) {
           <nav class="segments provider-switch" aria-label="Usage provider">
             ${providerOptions.map((option) => `<button class="seg provider-option ${provider === option.value ? "active" : ""}" type="button" data-provider="${option.value}" aria-pressed="${provider === option.value}">${providerLogo(option.value, "provider-option-logo")}<span>${option.label}</span></button>`).join("")}
           </nav>
+          ${Array.isArray(data.origins) && data.origins.length > 1 ? `
+          <nav class="segments origin-switch" aria-label="Machine">
+            ${data.origins.map((option) => `<button class="seg origin-option ${(data.origin || "all") === option.value ? "active" : ""}" type="button" data-origin="${escapeHtml(option.value)}" aria-pressed="${(data.origin || "all") === option.value}">${escapeHtml(option.label)}</button>`).join("")}
+          </nav>
+          ` : ""}
           <nav class="segments range-switch" aria-label="Range">
             ${rangeOptions.map((range) => `<button class="seg ${activeRange === range.value ? "active" : ""}" type="button" data-range="${range.value}" ${range.value === "custom" ? `id="custom-range-trigger" aria-haspopup="dialog" aria-expanded="${customRangeOpen}"` : ""}>${range.label}</button>`).join("")}
           </nav>
@@ -2020,6 +2028,20 @@ function render(data) {
       customRangeOpen = false;
       activeRange = data.range;
       activeProvider = button.dataset.provider;
+      activeTableView = "usage";
+      invalidateRequests();
+      expandedModels.clear();
+      syncUrl();
+      refresh();
+    });
+  });
+
+  document.querySelectorAll("button[data-origin]").forEach((button) => {
+    button.addEventListener("click", () => {
+      customRangePending = false;
+      customRangeOpen = false;
+      activeRange = data.range;
+      activeOrigin = button.dataset.origin;
       activeTableView = "usage";
       invalidateRequests();
       expandedModels.clear();
@@ -2437,6 +2459,7 @@ async function refresh() {
     diagnosticsCache.delete(diagnosticsKey(data));
     diagnosticsErrors.delete(diagnosticsKey(data));
     activeProvider = data.provider || activeProvider;
+    activeOrigin = data.origin || activeOrigin;
     activeRange = data.range || activeRange;
     activeChartRange = data.chart?.range || activeChartRange;
     customRangePending = false;
