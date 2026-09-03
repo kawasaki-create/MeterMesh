@@ -1,10 +1,17 @@
 import { spawn, spawnSync } from "node:child_process";
+import { join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+
+const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 
 function candidateCommands() {
   const candidates = [];
   if (process.env.PYTHON) candidates.push(process.env.PYTHON);
+  candidates.push(
+    join(projectRoot, ".venv", "Scripts", "python.exe"),
+    join(projectRoot, ".venv", "bin", "python")
+  );
   candidates.push("python", "python3");
   return [...new Set(candidates)];
 }

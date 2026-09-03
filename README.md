@@ -103,6 +103,26 @@ npm run dev:all
 
 Open <http://127.0.0.1:8765>.
 
+On Windows, the repository includes a PowerShell launcher that creates a local
+Python 3.12 environment with uv and reuses it automatically:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start-windows.ps1
+```
+
+Node.js 20 or newer and uv must be installed first. The launcher installs the
+small Windows-only `tzdata` dependency automatically. To expose the local
+dashboard to an iPhone on the
+same Tailscale network, run the launcher with `-Tailscale`, then open the URL
+shown by `tailscale serve status`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start-windows.ps1 -Tailscale
+```
+
+The launcher reads the current Tailscale hostname and adds only that hostname
+to Vite's allowed-host list. Restart the launcher after changing this setting.
+
 On macOS, `Start MeterMesh.command` starts both the Python API and Vite frontend.
 
 Direct API server:
