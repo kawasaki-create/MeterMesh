@@ -210,6 +210,19 @@ class OpenCodeUsageTests(unittest.TestCase):
         self.assertTrue(source_row["stale"])
         self.assertNotIn(str(self.root), source_row["error"])
 
+    def test_empty_database_with_no_tables_imports_as_zero_events(self):
+        # A freshly created OpenCode install (e.g. a Syncthing-mirrored
+        # opencode.db that hasn't been used yet) has no tables at all — that's
+        # "nothing to import yet", not an incompatible schema.
+        self.source_conn.close()
+        Path(self.db_path).unlink()
+        sqlite3.connect(self.db_path).close()
+
+        result = self.import_source()
+
+        self.assertEqual(result["events"], 0)
+        self.assertEqual(self.unibase.active_event_rows("opencode"), [])
+
     def test_resolve_db_precedence(self):
         self.assertEqual(
             opencode_usage.resolve_opencode_db("/tmp/cli.db", {"OPENCODE_USAGE_DB": "/tmp/env.db"}),

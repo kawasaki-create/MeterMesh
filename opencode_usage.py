@@ -29,8 +29,10 @@ def resolve_opencode_db(
 
 
 def schema_capabilities(conn: sqlite3.Connection) -> dict:
-    message_columns = {row[1] for row in conn.execute("pragma table_info(message)")}
-    session_columns = {row[1] for row in conn.execute("pragma table_info(session)")}
+    tables = {row[0] for row in conn.execute("select name from sqlite_master where type = 'table'")}
+    message_exists = "message" in tables
+    message_columns = {row[1] for row in conn.execute("pragma table_info(message)")} if message_exists else set()
+    session_columns = {row[1] for row in conn.execute("pragma table_info(session)")} if "session" in tables else set()
     try:
         json_supported = bool(conn.execute("select json_valid('{}')").fetchone()[0])
     except sqlite3.DatabaseError:
@@ -43,6 +45,9 @@ def schema_capabilities(conn: sqlite3.Connection) -> dict:
     }
     return {
         **fingerprint_payload,
+        # A brand-new OpenCode install has an opencode.db with no tables yet —
+        # that's "nothing to import", not an incompatible schema.
+        "empty": not tables,
         "compatible": REQUIRED_MESSAGE_COLUMNS.issubset(message_columns) and json_supported,
         "fingerprint": hashlib.sha256(json.dumps(fingerprint_payload, sort_keys=True).encode()).hexdigest(),
     }
@@ -191,7 +196,7 @@ def import_opencode_source(
             conn.set_authorizer(_authorizer)
             conn.execute("begin")
             capabilities = schema_capabilities(conn)
-            if not capabilities["compatible"]:
+            if not capabilities["compatible"] and not capabilities["empty"]:
                 raise RuntimeError("Unsupported OpenCode message schema")
             cursor_time = 0
             previous_cursor = (0, "")
@@ -203,8 +208,11 @@ def import_opencode_source(
                 except (ValueError, TypeError, json.JSONDecodeError):
                     cursor_time = 0
                     previous_cursor = (0, "")
-            max_source_time = int(conn.execute("select coalesce(max(time_updated), 0) from message").fetchone()[0])
-            active_ids = conn.execute(ACTIVE_MESSAGE_IDS_SQL).fetchall()
+            max_source_time = (
+                0 if capabilities["empty"]
+                else int(conn.execute("select coalesce(max(time_updated), 0) from message").fetchone()[0])
+            )
+            active_ids = [] if capabilities["empty"] else conn.execute(ACTIVE_MESSAGE_IDS_SQL).fetchall()
             active_key_times = [
                 (
                     stable_id("opencode", "message", str(row["id"] or "")),
@@ -229,7 +237,7 @@ def import_opencode_source(
             )
             if replaced or force_full_scan:
                 cursor_time = 0
-            rows = conn.execute(MESSAGE_USAGE_SQL, (cursor_time,)).fetchall()
+            rows = [] if capabilities["empty"] else conn.execute(MESSAGE_USAGE_SQL, (cursor_time,)).fetchall()
             session_diagnostic = None
             session_columns = set(capabilities["session"])
             aggregate_columns = {
